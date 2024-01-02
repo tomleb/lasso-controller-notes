@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/client-go/util/workqueue"
@@ -119,31 +120,73 @@ func coalescing() {
 }
 
 // This example demonstrates the concurrency capabilities of the workqueue.
-//
-// Three workers are started to work on items in the queue. 3 keys are added to
-// the workqueue. This function takes a total of 4 seconds instead of 3*4=12
-// seconds to run because all 3 workers are working concurrently.
 func concurrency() {
-	slog.Info("=== Concurrency ===")
-	var group sync.WaitGroup
-	group.Add(3)
+	// Three workers are started to work on items in the queue. 3 keys are added to
+	// the workqueue. This function takes a total of 4 seconds instead of 3*4=12
+	// seconds to run because all 3 workers are working concurrently.
+	{
+		slog.Info("=== Concurrency 1 ===")
+		var group sync.WaitGroup
+		group.Add(3)
 
-	wq := workqueue.New()
-	wq.Add("key-1")
-	wq.Add("key-2")
-	wq.Add("key-3")
+		wq := workqueue.New()
+		wq.Add("key-1")
+		wq.Add("key-2")
+		wq.Add("key-3")
 
-	go runWorker(&group, "1", wq, func() {
-		time.Sleep(4 * time.Second)
-	})
-	go runWorker(&group, "2", wq, func() {
-		time.Sleep(4 * time.Second)
-	})
-	go runWorker(&group, "3", wq, func() {
-		time.Sleep(4 * time.Second)
-	})
+		go runWorker(&group, "1", wq, func() {
+			time.Sleep(4 * time.Second)
+		})
+		go runWorker(&group, "2", wq, func() {
+			time.Sleep(4 * time.Second)
+		})
+		go runWorker(&group, "3", wq, func() {
+			time.Sleep(4 * time.Second)
+		})
 
-	wq.ShutDownWithDrain()
-	group.Wait()
-	slog.Info("===             ===")
+		wq.ShutDownWithDrain()
+		group.Wait()
+		slog.Info("===               ===")
+	}
+
+	// Three workers are started to work on items in the queue. 3 keys are added to
+	// the workqueue. This function takes a total of 12 seconds because all keys
+	// are the same and a key cannot be run concurrently.
+	{
+		slog.Info("=== Concurrency 2 ===")
+		var group sync.WaitGroup
+		group.Add(3)
+
+		wq := workqueue.New()
+		doneCh := make(chan struct{}, 1)
+
+		var count atomic.Uint64
+		add := func() {
+			if count.Load() < 3 {
+				wq.Add("key-1")
+				count.Add(1)
+				return
+			}
+			close(doneCh)
+		}
+		add()
+
+		go runWorker(&group, "1", wq, func() {
+			add() // Adding to the key while we're working on that same key
+			time.Sleep(4 * time.Second)
+		})
+		go runWorker(&group, "2", wq, func() {
+			add() // Adding to the key while we're working on that same key
+			time.Sleep(4 * time.Second)
+		})
+		go runWorker(&group, "3", wq, func() {
+			add() // Adding to the key while we're working on that same key
+			time.Sleep(4 * time.Second)
+		})
+
+		<-doneCh
+		wq.ShutDownWithDrain()
+		group.Wait()
+		slog.Info("===               ===")
+	}
 }
