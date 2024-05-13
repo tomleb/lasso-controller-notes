@@ -117,6 +117,34 @@ func coalescing() {
 		group.Wait()
 		slog.Info("===            ===")
 	}
+
+	// Example 3 where we use AddAfter (EnqueueAfter in lasso world) twice
+	// for a key and it gets processed only once.
+	{
+		slog.Info("=== Coalescing 3 ===")
+		var group sync.WaitGroup
+		group.Add(1)
+		workCh := make(chan struct{}, 2)
+
+		wq := workqueue.NewDelayingQueue()
+		wq.AddAfter("key-1", 3*time.Second)
+		wq.AddAfter("key-1", 6*time.Second)
+		go runWorker(&group, "1", wq, func() {
+			workCh <- struct{}{}
+		})
+
+		<-workCh
+
+		select {
+		case <-workCh:
+			fmt.Println("Shouldn't receive this")
+		case <-time.After(10 * time.Second):
+		}
+
+		wq.ShutDownWithDrain()
+		group.Wait()
+		slog.Info("===            ===")
+	}
 }
 
 // This example demonstrates the concurrency capabilities of the workqueue.
