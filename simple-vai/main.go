@@ -5,7 +5,10 @@ import (
 	"log"
 	"os"
 
-	"github.com/rancher/lasso/pkg/cache/sql/informer/factory"
+	db2 "github.com/rancher/lasso/pkg/cache/sql/db"
+	"github.com/rancher/lasso/pkg/cache/sql/encryption"
+	"github.com/rancher/lasso/pkg/cache/sql/informer"
+	_ "github.com/rancher/lasso/pkg/cache/sql/informer/factory"
 	"github.com/rancher/wrangler/pkg/kubeconfig"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -33,25 +36,29 @@ func mainErr() error {
 	restConfig, err := clientConfig.ClientConfig()
 	must(err)
 
-	informerFactory, err := factory.NewInformerFactory()
-	must(err)
-
 	dynClient, err := dynamic.NewForConfig(restConfig)
 	must(err)
+
+	m, err := encryption.NewManager()
+	must(err)
+
+	dbClient, err := db2.NewClient(nil, m, m)
+	must(err)
+
+	gvk := schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "ConfigMap",
+	}
 
 	gvr := schema.GroupVersionResource{
 		Group:    "",
 		Version:  "v1",
 		Resource: "configmaps",
 	}
-
 	client := dynClient.Resource(gvr)
 
-	informer, err := informerFactory.InformerFor([][]string{}, client, schema.GroupVersionKind{
-		Group:   "",
-		Version: "v1",
-		Kind:    "ConfigMap",
-	}, true)
+	informer, err := informer.NewInformer(client, [][]string{}, gvk, dbClient, false, true)
 	must(err)
 
 	stopCh := make(chan struct{})
