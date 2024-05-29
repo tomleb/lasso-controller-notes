@@ -5,6 +5,8 @@ import (
 	"log"
 	"os"
 
+	// "reflect"
+
 	db2 "github.com/rancher/lasso/pkg/cache/sql/db"
 	"github.com/rancher/lasso/pkg/cache/sql/encryption"
 	"github.com/rancher/lasso/pkg/cache/sql/informer"
@@ -65,10 +67,39 @@ func mainErr() error {
 	fmt.Println("Starting informer")
 	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			fmt.Println(obj)
+			// fmt.Println(obj)
 		},
 	})
-	informer.Run(stopCh)
+	informer.GetIndexer().AddIndexers(map[string]cache.IndexFunc{
+		"indexKey": func(obj interface{}) ([]string, error) {
+			return []string{"indexValue"}, nil
+		},
+	})
+	go informer.Run(stopCh)
+	cache.WaitForCacheSync(stopCh, informer.HasSynced)
+	fmt.Println("Synced cache")
+
+	// These test the cache.Store methods (TODO)
+
+	// Ok
+	// fmt.Println(informer.GetIndexer().ListKeys())
+
+	// These tests the cache.Indexer methods
+
+	// [] sql: expected 1 destination arguments in Scan, not 4
+	// var obj any
+	// fmt.Println(informer.GetIndexer().Index("indexKey", obj))
+
+	// [] sql: expected 1 destination arguments in Scan, not 4
+	// fmt.Println(informer.GetIndexer().ByIndex("indexKey", "indexValue"))
+
+	// Panic:
+	// fatal error: sync: Unlock of unlocked RWMutex
+	// fmt.Println(informer.GetIndexer().IndexKeys("indexKey", "indexValue"))
+
+	// Returns [] but I expect to get ["indexValue"]
+	// fmt.Println(informer.GetIndexer().ListIndexFuncValues("indexKey"))
+
 	<-stopCh
 
 	return nil
