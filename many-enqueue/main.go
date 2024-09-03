@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/rancher/lasso/pkg/cache"
@@ -35,7 +38,8 @@ func main() {
 //     explained below.
 func mainErr() error {
 	scheme := runtime.NewScheme()
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	clientConfig := kubeconfig.GetNonInteractiveClientConfig(os.Getenv("KUBECONFIG"))
 	restConfig, err := clientConfig.ClientConfig()
@@ -57,8 +61,9 @@ func mainErr() error {
 			//
 			// By default, Rancher specifies neither of those so the value is 0
 			// which means there isn't any resync done.
-			DefaultResync: 5 * time.Second,
+			DefaultResync: 40 * time.Second,
 		},
+		Tracer: Init(ctx, "test-lasso"),
 	}
 	controllerFactory, err := controller.NewSharedControllerFactoryFromConfigWithOptions(restConfig, scheme, opts)
 	if err != nil {
@@ -91,55 +96,84 @@ func mainErr() error {
 	// my-ns/enqueue-key and my-ns/enqueue-after don't exist in our cluster, so
 	// they are not in the cache.
 
+	_, rootSpan := StartSpanFromContext(ctx, "root")
+	rootSpanCtx := rootSpan.SpanContext()
+
 	// .Enqueue() enqueues the key <namespace>/<name>
-	cmCtrl.Enqueue("my-ns", "enqueue")
+	cmCtrl.EnqueueWithTrace("my-ns", "enqueue", &rootSpanCtx)
 	// .EnqueueKey() also enqueues the key <namespace>/<name>
-	cmCtrl.EnqueueKey("my-ns/enqueue-key")
+	cmCtrl.EnqueueKeyWithTrace("my-ns/enqueue-key", &rootSpanCtx)
 	// .EnqueueAfter() will enqueue <namespace/<name> after the duration given.
 	// In this case, my-ns/enqueue-after will be enqueued in 4 seconds. The 4
 	// second timer _seem_ to start after the cache has been synced.
-	cmCtrl.EnqueueAfter("my-ns", "enqueue-after", 4*time.Second)
+	cmCtrl.EnqueueAfterWithTrace("my-ns", "enqueue-after", 4*time.Second, &rootSpanCtx)
+	rootSpan.End()
 
 	// The handlers are only started when the cache has been synced. This means
 	// it's fine to enqueue keys before all handlers are registered.
-	cmCtrl.RegisterHandler(ctx, "configmap-controller", controller.SharedControllerHandlerFunc(func(key string, obj runtime.Object) (runtime.Object, error) {
-		if obj != nil {
-			metadata, err := meta.Accessor(obj)
-			if err != nil {
-				return nil, err
-			}
-			if metadata.GetNamespace() != "default" {
-				return nil, nil
-			}
-			log.Println("Received key", key)
+	cmCtrl.RegisterHandlerContext(ctx, "configmap-controller", controller.SharedControllerHandlerContextFunc(func(ctx context.Context, key string, obj runtime.Object) (runtime.Object, error) {
+		if obj == nil {
+			log.Println("Received key", key, obj)
 			return nil, nil
 		}
 
-		log.Println("Received key", key, obj)
+		_, span1 := StartSpanFromContext(ctx, "Update ConfigMap")
+		time.Sleep(30 * time.Millisecond)
+		span1.End()
+
+		_, span2 := StartSpanFromContext(ctx, "Delete ConfigMap")
+		time.Sleep(30 * time.Millisecond)
+		span2.End()
+
+		metadata, err := meta.Accessor(obj)
+		if err != nil {
+			return nil, err
+		}
+		if metadata.GetNamespace() != "default" {
+			return nil, nil
+		}
+		log.Println("Received key", key)
+		return nil, nil
+	}))
+	cmCtrl.RegisterHandlerContext(ctx, "another-controller", controller.SharedControllerHandlerContextFunc(func(ctx context.Context, key string, obj runtime.Object) (runtime.Object, error) {
+		_, span := StartSpanFromContext(ctx, "do something")
+		time.Sleep(100 * time.Millisecond)
+		span.End()
+		if key == "default/kube-root-ca.crt" {
+			return nil, fmt.Errorf("fake error")
+		}
+		return obj, nil
+	}))
+	cmCtrl.RegisterHandlerContext(ctx, "third-controller", controller.SharedControllerHandlerContextFunc(func(ctx context.Context, key string, obj runtime.Object) (runtime.Object, error) {
+		_, span := StartSpanFromContext(ctx, "this run")
+		defer span.End()
+
+		time.Sleep(30 * time.Millisecond)
+
 		return nil, nil
 	}))
 
 	// The secret Shared Controller below is just an example to show that
 	// enqueuing in the ConfigMap controller doesn't affect the queue for the
 	// Secret controller.
-	secretGVR := schema.GroupVersionResource{
-		Group:    "",
-		Version:  "v1",
-		Resource: "secrets",
-	}
-	secretCtrl := controllerFactory.ForResourceKind(secretGVR, "Secret", true)
-	secretCtrl.RegisterHandler(ctx, "secret-controller", controller.SharedControllerHandlerFunc(func(_ string, obj runtime.Object) (runtime.Object, error) {
-		if obj != nil {
-			return nil, nil
-		}
-		panic("unexpected key")
-	}))
+	// secretGVR := schema.GroupVersionResource{
+	// 	Group:    "",
+	// 	Version:  "v1",
+	// 	Resource: "secrets",
+	// }
+	// secretCtrl := controllerFactory.ForResourceKind(secretGVR, "Secret", true)
+	// secretCtrl.RegisterHandler(ctx, "secret-controller", controller.SharedControllerHandlerFunc(func(_ string, obj runtime.Object) (runtime.Object, error) {
+	// 	if obj != nil {
+	// 		return nil, nil
+	// 	}
+	// 	panic("unexpected key")
+	// }))
 
 	log.Println("Starting controller factory")
 	controllerFactory.Start(ctx, 1)
 	log.Println("Started controller factory")
 
-	time.Sleep(20 * time.Second)
+	<-ctx.Done()
 
 	return nil
 }
