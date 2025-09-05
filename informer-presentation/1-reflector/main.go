@@ -78,9 +78,11 @@ func main() {
 	gvr := v1.SchemeGroupVersion.WithResource("configmaps")
 	lw := &cache.ListWatch{
 		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+			fmt.Println("Listing")
 			return dynClient.Resource(gvr).List(ctx, options)
 		},
 		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+			fmt.Println("Watching")
 			return dynClient.Resource(gvr).Watch(ctx, options)
 		},
 	}

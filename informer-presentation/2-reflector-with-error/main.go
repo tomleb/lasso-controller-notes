@@ -85,6 +85,10 @@ func (w *failingWatcher) run() {
 	defer close(w.ch)
 	i := 0
 	for event := range w.w.ResultChan() {
+		if event.Type == watch.Bookmark {
+			continue
+		}
+
 		if i == 1 {
 			w.ch <- watch.Event{
 				Type: watch.Error,
@@ -110,9 +114,11 @@ func main() {
 	gvr := v1.SchemeGroupVersion.WithResource("configmaps")
 	lw := &cache.ListWatch{
 		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+			fmt.Println("Listing", options)
 			return dynClient.Resource(gvr).List(ctx, options)
 		},
 		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+			fmt.Println("Watching", options)
 			watcher, err := dynClient.Resource(gvr).Watch(ctx, options)
 			if err != nil {
 				return nil, err
