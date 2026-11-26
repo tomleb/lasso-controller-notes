@@ -60,11 +60,13 @@ const (
 // Cluster 12 seconds later. Run it with either:
 //
 //	go run . -mode=bad
-//	go run . -mode=good
+//	go run . -mode=good -debug
 //
-// and compare the logs.
+// and compare the logs. The good handler logs at debug level (see
+// registerGood), so pass -debug to see what it does.
 func mainErr() error {
 	mode := flag.String("mode", "bad", "which CRT handler to run: bad or good")
+	debug := flag.Bool("debug", false, "enable debug logs (used by the good handler)")
 	flag.Parse()
 	if *mode != "bad" && *mode != "good" {
 		return fmt.Errorf("unknown mode %q, must be bad or good", *mode)
@@ -72,7 +74,12 @@ func mainErr() error {
 
 	ctx := context.Background()
 	start := time.Now()
+	level := slog.LevelInfo
+	if *debug {
+		level = slog.LevelDebug
+	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			// Show time elapsed since start, easier to read than timestamps.
 			if a.Key == slog.TimeKey && len(groups) == 0 {
@@ -229,9 +236,13 @@ func registerBad(ctx context.Context, crts *generic.Controller[*ClusterRegistrat
 // deleted), the resolver returns the keys of the CRTs that point to that
 // Cluster and they are enqueued in the CRT controller's workqueue.
 //
-// When running this example, you should see the CRT handler run exactly once
-// before the Cluster is created (no errors), then once more right after the
-// Cluster is created, with a latency in the milliseconds.
+// The handler and the resolver log at debug level: waiting for a dependency
+// is a normal state, not something to report in the logs by default. The
+// whole point is to avoid the log spam of the bad way.
+//
+// When running this example with -debug, you should see the CRT handler run
+// exactly once before the Cluster is created (no errors), then once more right
+// after the Cluster is created, with a latency in the milliseconds.
 func registerGood(ctx context.Context, crts *generic.Controller[*ClusterRegistrationToken, *ClusterRegistrationTokenList], clusters *generic.NonNamespacedController[*Cluster, *ClusterList], runs *atomic.Int64) {
 	// An indexer lets the resolver find the CRTs for a given Cluster without
 	// listing all CRTs. Indexers must be added before the cache is started.
@@ -244,14 +255,14 @@ func registerGood(ctx context.Context, crts *generic.Controller[*ClusterRegistra
 			return crt, nil
 		}
 		runs.Add(1)
-		slog.Info("CRT handler running", "key", key)
+		slog.Debug("CRT handler running", "key", key)
 
 		cluster, err := clusters.Cache().Get(crt.Spec.ClusterName)
 		if apierrors.IsNotFound(err) {
 			// GOOD: The Cluster doesn't exist yet. This is not an error,
 			// the relatedresource watch below will enqueue this CRT once
 			// the Cluster appears.
-			slog.Info("Cluster not found, waiting for it to appear", "key", key, "cluster", crt.Spec.ClusterName)
+			slog.Debug("Cluster not found, waiting for it to appear", "key", key, "cluster", crt.Spec.ClusterName)
 			return crt, nil
 		}
 		if err != nil {
@@ -276,7 +287,7 @@ func registerGood(ctx context.Context, crts *generic.Controller[*ClusterRegistra
 		}
 		keys := make([]relatedresource.Key, 0, len(crtsForCluster))
 		for _, crt := range crtsForCluster {
-			slog.Info("Cluster changed, enqueuing CRT", "cluster", name, "crt", crt.Namespace+"/"+crt.Name)
+			slog.Debug("Cluster changed, enqueuing CRT", "cluster", name, "crt", crt.Namespace+"/"+crt.Name)
 			keys = append(keys, relatedresource.NewKey(crt.Namespace, crt.Name))
 		}
 		return keys, nil
